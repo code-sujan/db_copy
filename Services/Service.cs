@@ -137,6 +137,122 @@ internal class Service : IService
             }
         }
     }
+    
+        public void MigrateSqlToPsql()
+    {
+        var errors = new List<string>();
+
+        try
+        {
+            SpectreConsoleHelper.WriteHeader("MSSql to psql", Color.Blue);
+
+            _validator.ValidateProviders();
+
+            SpectreConsoleHelper.Log("Initializing...");
+            AnsiConsole.Status()
+                .Spinner(Spinner.Known.Arrow3)
+                .SpinnerStyle(Style.Parse("green"))
+                .Start("Starting the migration...", ctx =>
+                {
+                    using var postgresConnection = _provider.GetPostgresqlConnection();
+                    using var sqlServerConnection = _provider.GetSqlServerConnection();
+
+                    postgresConnection.Open();
+                    sqlServerConnection.Open();
+
+                    ctx.Status("Fetching MSSQL schemas");
+                    ctx.Spinner(Spinner.Known.BouncingBall);
+                    var getSchemasQuery = "SELECT schema_name FROM information_schema.schemata";
+                    var allSchemas = postgresConnection.Query<string>(getSchemasQuery).ToList();
+                    SpectreConsoleHelper.Log("Fetched schemas from postgresql...");
+
+                    var schemas = GetNecessarySchemas(allSchemas);
+
+                    ctx.Status("Looping through available schemas...");
+                    foreach (var sourceSchema in schemas)
+                    {
+                        string destinationSchema = $"{sourceSchema}_new";
+
+                        ctx.Status($"Creating {destinationSchema} schema in sql server...");
+                        var createDestinationSchemaQuery = $"CREATE SCHEMA [{destinationSchema}];";
+                        sqlServerConnection.Execute(createDestinationSchemaQuery);
+                        SpectreConsoleHelper.Log($"Created {destinationSchema} schema in sql server...");
+
+                        ctx.Status($"Fetching available tables from {sourceSchema} schema...");
+                        var getTablesQuery = $"SELECT table_name FROM information_schema.tables WHERE table_schema = '{sourceSchema}'";
+                        var tables = postgresConnection.Query<string>(getTablesQuery).ToList();
+                        SpectreConsoleHelper.Log($"Fetched tables of {sourceSchema} schema from postgres");
+
+                        ctx.Status($"Looping through all tables of {sourceSchema} schema...");
+                        foreach (var table in tables)
+                        {
+                            ctx.Status($"Fetching column definition for {table} table...");
+                            var getColumnsQuery = $"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{table}' AND table_schema = '{sourceSchema}'";
+                            var columns = postgresConnection.Query(getColumnsQuery);
+                            SpectreConsoleHelper.Log($"Fetched column definition for {table} table...");
+
+                            ctx.Status($"Creating table {destinationSchema}.{table} in sql server...");
+                            var createTableQuery = $"CREATE TABLE {destinationSchema}.{table} (";
+                            createTableQuery += string.Join(", ", columns.Select(column => $"[{column.column_name}] {ConvertPostgreSqlToSqlServerDataType(column.data_type)}"));
+                            createTableQuery += ")";
+                            sqlServerConnection.Execute(createTableQuery);
+                            SpectreConsoleHelper.Log($"Created table {destinationSchema}.{table} in sql server...");
+
+                            IDataReader data;
+                            try
+                            {
+                                ctx.Status($"Fetching data from {sourceSchema}.{table} from postgresql...");
+                                data = postgresConnection.ExecuteReader($"SELECT * FROM {sourceSchema}.{table}");
+                                SpectreConsoleHelper.Log($"Fetched data from {sourceSchema}.{table} table of postgresql...");
+
+                                ctx.Status("Coverting the data into proper shape before migrating to sql server...");
+                                var dataTable = new DataTable();
+                                dataTable.Load(data);
+                                SpectreConsoleHelper.Log("Converted data into proper shape...");
+
+                                ctx.Status($"Transferring data from [blue]{sourceSchema}.{table}[/] to [green]{destinationSchema}.{table}[/]");
+                                using var bulkCopy = new SqlBulkCopy(sqlServerConnection);
+                                bulkCopy.DestinationTableName = $"{destinationSchema}.{table}";
+                                bulkCopy.BulkCopyTimeout = 300;
+                                bulkCopy.WriteToServer(dataTable);
+                                SpectreConsoleHelper.Success($"Successfully transferred data from {sourceSchema}.{table} to {destinationSchema}.{table}");
+                            }
+                            catch (Exception ex)
+                            {
+                                errors.Add($"{sourceSchema}~{table}");
+                                AnsiConsole.WriteException(ex);
+                            }
+                        }
+                    }
+                });
+            SpectreConsoleHelper.WriteHeader("Success!", Color.Green);
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.WriteException(ex);
+        }
+        finally
+        {
+            if (errors.Any())
+            {
+                var table = new Table();
+                table.Title("List of failed migration table/views");
+
+                table.AddColumn("SourceSchema");
+                table.AddColumn("SourceTable");
+
+                foreach (var error in errors)
+                {
+                    var errorDetails = error.Split("~");
+                    table.AddRow(errorDetails[0], errorDetails[1]);
+                }
+
+                table.Border(TableBorder.Rounded);
+                AnsiConsole.Write(table);
+            }
+        }
+    }
+
 
     #region Private methods
 
@@ -201,6 +317,76 @@ internal class Service : IService
         };
 
         return map.TryGetValue(postgresDataType.ToLower(), out string? value) ? value.ToUpper() : "nvarchar(max)".ToUpper();
+    }
+    
+    private static List<string> GetNecessarySchemas(List<string> schemas)
+    {
+        var defaultSchemas = new List<string>
+        {
+            "guest",
+            "INFORMATION_SCHEMA",
+            "sys",
+            "db_owner",
+            "db_accessadmin",
+            "db_securityadmin",
+            "db_ddladmin",
+            "db_backupoperator",
+            "db_datareader",
+            "db_datawriter",
+            "db_denydatareader",
+            "db_denydatawriter"
+        };
+
+        return schemas.Where(x => !defaultSchemas.Contains(x)).ToList();
+    }
+    
+    public static string ConvertSqlTypeToPsqlType(string sqlType)
+    {
+        switch (sqlType.ToLower())
+        {
+            case "bigint":
+                return "bigint";
+            case "binary":
+            case "varbinary":
+            case "image":
+                return "bytea";
+            case "bit":
+                return "boolean";
+            case "char":
+            case "nchar":
+                return "char";
+            case "date":
+            case "datetime":
+            case "datetime2":
+            case "smalldatetime":
+                return "timestamp";
+            case "decimal":
+            case "numeric":
+                return "numeric";
+            case "float":
+            case "real":
+                return "float8";
+            case "int":
+                return "integer";
+            case "money":
+            case "smallmoney":
+                return "money";
+            case "nvarchar":
+            case "varchar":
+            case "text":
+            case "ntext":
+                return "text";
+            case "smallint":
+                return "smallint";
+            case "time":
+                return "time";
+            case "timestamp":
+                return "timestamp";
+            case "uniqueidentifier":
+                return "uuid";
+            default:
+                return sqlType;
+        }
     }
 
     #endregion

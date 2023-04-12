@@ -1,4 +1,4 @@
 {
-  "SqlServerConnectionString": "",
-  "PostgreSqlConnectionString": ""
+  "SqlServerConnectionString": "Server=sujan-pc\\MSSQLSERVER;Database=sworojgar78;User Id=sa;Password=data-safety;",
+  "PostgreSqlConnectionString": "Server=localhost; port=5432; Username=postgres; Password=data-safety; Database=sworojgar_db;"
 }

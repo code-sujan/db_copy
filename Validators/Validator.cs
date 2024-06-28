@@ -1,40 +1,26 @@
 ﻿using System.Data;
 using Application.Helpers;
-using Application.Providers.Interfaces;
 using Application.Validators.Interfaces;
 
 namespace Application.Validators;
 
 internal class Validator : IValidator
 {
-    private readonly IProvider _provider;
-
-    public Validator(IProvider provider)
+    public void ValidateProviders(IDbConnection source, IDbConnection dest)
     {
-        _provider = provider;
-    }
-
-    public void ValidateProviders()
-    {
-        using (var sqlServerConnection = _provider.GetSqlServerConnection())
+        if (!IsServerConnected(dest))
         {
-            if (!IsServerConnected(sqlServerConnection))
-            {
-                SpectreConsoleHelper.Error("Invalid sql server connection.. ( Configure properly at connectionString.json )");
-                Console.ReadLine();
-            }
+            SpectreConsoleHelper.Error($"Invalid db connection {source.ConnectionString}");
+            Console.ReadLine();
         }
-        SpectreConsoleHelper.Success("Sql server connected...");
-
-        using (var postgreSqlConnection = _provider.GetPostgresqlConnection())
+        SpectreConsoleHelper.Success("Db connected...");
+        
+        if (!IsServerConnected(source))
         {
-            if (!IsServerConnected(postgreSqlConnection))
-            {
-                SpectreConsoleHelper.Error("Invalid postgresql connection.. ( Configure properly at connectionString.json )");
-                Console.ReadLine();
-            }
+            SpectreConsoleHelper.Error($"Invalid db connection {source.ConnectionString}");
+            Console.ReadLine();
         }
-        SpectreConsoleHelper.Success("PostgreSQL connected...");
+        SpectreConsoleHelper.Success("Db connected...");
     }
 
     #region Private methods

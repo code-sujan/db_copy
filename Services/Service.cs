@@ -1,46 +1,84 @@
 ﻿using System.Data;
 using System.Data.SqlClient;
+using Application.Extensions;
 using Application.Helpers;
-using Application.Providers.Interfaces;
 using Application.Services.Interfaces;
 using Application.Validators.Interfaces;
 using Dapper;
+using Microsoft.Extensions.Configuration;
+using Npgsql;
 using Spectre.Console;
 
 namespace Application;
 
 internal class Service : IService
 {
-    private readonly IProvider _provider;
     private readonly IValidator _validator;
+    private readonly IConfiguration _configuration;
+    private readonly ISqlToSqlService _sqlToSqlService;
 
     public Service(
-        IProvider provider,
-        IValidator validator
-        )
+        IValidator validator, IConfiguration configuration, ISqlToSqlService sqlToSqlService)
     {
-        _provider = provider;
         _validator = validator;
+        _configuration = configuration;
+        _sqlToSqlService = sqlToSqlService;
     }
 
     public void Migrate()
     {
-        var errors = new List<string>();
+        var source = _configuration.GetSource();
+        var destination = _configuration.GetDestination();
+        if (source.Type.ToLower().Equals("mssql") && destination.Type.ToLower().Equals("mssql"))
+        {
+            MigrateSqlToSql(source.ConnectionString, destination.ConnectionString);
+        }
+    }
 
+    private void MigrateSqlToSql(string source, string dest)
+    {
+        var errors = new List<string>();
         try
         {
             SpectreConsoleHelper.WriteHeader("postgresql to mssql", Color.Blue);
-
-            _validator.ValidateProviders();
-
+            using var sourceConnection = new SqlConnection(source);
+            using var destConnection = new SqlConnection(dest);
+            _validator.ValidateProviders(sourceConnection, destConnection);
             SpectreConsoleHelper.Log("Initializing...");
             AnsiConsole.Status()
                 .Spinner(Spinner.Known.Arrow3)
                 .SpinnerStyle(Style.Parse("green"))
                 .Start("Starting the migration...", ctx =>
                 {
-                    using var postgresConnection = _provider.GetPostgresqlConnection();
-                    using var sqlServerConnection = _provider.GetSqlServerConnection();
+                    errors = _sqlToSqlService.CreateAndCopy(ctx, sourceConnection, destConnection);
+                });
+            SpectreConsoleHelper.WriteHeader("Success!", Color.Green);
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.WriteException(ex);
+        }
+        finally
+        {
+            DoOnFinally(errors);
+        }
+    }
+
+    void PsqlToSql(string source, string dest)
+    {
+        var errors = new List<string>();
+        try
+        {
+            SpectreConsoleHelper.WriteHeader("postgresql to mssql", Color.Blue);
+            SpectreConsoleHelper.Log("Initializing...");
+            AnsiConsole.Status()
+                .Spinner(Spinner.Known.Arrow3)
+                .SpinnerStyle(Style.Parse("green"))
+                .Start("Starting the migration...", ctx =>
+                {
+                    using var postgresConnection = new NpgsqlConnection(source);
+                    using var sqlServerConnection = new SqlConnection(dest);
+                    _validator.ValidateProviders(postgresConnection, sqlServerConnection);
 
                     postgresConnection.Open();
                     sqlServerConnection.Open();
@@ -118,27 +156,11 @@ internal class Service : IService
         }
         finally
         {
-            if (errors.Any())
-            {
-                var table = new Table();
-                table.Title("List of failed migration table/views");
-
-                table.AddColumn("SourceSchema");
-                table.AddColumn("SourceTable");
-
-                foreach (var error in errors)
-                {
-                    var errorDetails = error.Split("~");
-                    table.AddRow(errorDetails[0], errorDetails[1]);
-                }
-
-                table.Border(TableBorder.Rounded);
-                AnsiConsole.Write(table);
-            }
+            DoOnFinally(errors);
         }
     }
-    
-        public void MigrateSqlToPsql()
+
+    void SqlToPsql(string source, string dest)
     {
         var errors = new List<string>();
 
@@ -146,16 +168,15 @@ internal class Service : IService
         {
             SpectreConsoleHelper.WriteHeader("MSSql to psql", Color.Blue);
 
-            _validator.ValidateProviders();
-
             SpectreConsoleHelper.Log("Initializing...");
             AnsiConsole.Status()
                 .Spinner(Spinner.Known.Arrow3)
                 .SpinnerStyle(Style.Parse("green"))
                 .Start("Starting the migration...", ctx =>
                 {
-                    using var postgresConnection = _provider.GetPostgresqlConnection();
-                    using var sqlServerConnection = _provider.GetSqlServerConnection();
+                    using var postgresConnection = new NpgsqlConnection(source);
+                    using var sqlServerConnection = new SqlConnection(dest);
+                    _validator.ValidateProviders(postgresConnection, sqlServerConnection);
 
                     postgresConnection.Open();
                     sqlServerConnection.Open();
@@ -233,23 +254,28 @@ internal class Service : IService
         }
         finally
         {
-            if (errors.Any())
+            DoOnFinally(errors);
+        }
+    }
+
+    private static void DoOnFinally(List<string> errors)
+    {
+        if (errors.Any())
+        {
+            var table = new Table();
+            table.Title("List of failed migration table/views");
+
+            table.AddColumn("SourceSchema");
+            table.AddColumn("SourceTable");
+
+            foreach (var error in errors)
             {
-                var table = new Table();
-                table.Title("List of failed migration table/views");
-
-                table.AddColumn("SourceSchema");
-                table.AddColumn("SourceTable");
-
-                foreach (var error in errors)
-                {
-                    var errorDetails = error.Split("~");
-                    table.AddRow(errorDetails[0], errorDetails[1]);
-                }
-
-                table.Border(TableBorder.Rounded);
-                AnsiConsole.Write(table);
+                var errorDetails = error.Split("~");
+                table.AddRow(errorDetails[0], errorDetails[1]);
             }
+
+            table.Border(TableBorder.Rounded);
+            AnsiConsole.Write(table);
         }
     }
 
@@ -262,18 +288,22 @@ internal class Service : IService
         {
             schemas.Remove("information_schema");
         }
+
         if (schemas.Contains("pg_catalog"))
         {
             schemas.Remove("pg_catalog");
         }
+
         if (schemas.Contains("pg_toast"))
         {
             schemas.Remove("pg_toast");
         }
+
         if (schemas.Contains("pg_temp_1"))
         {
             schemas.Remove("pg_temp_1");
         }
+
         if (schemas.Contains("pg_toast_temp_1"))
         {
             schemas.Remove("pg_toast_temp_1");
@@ -318,7 +348,7 @@ internal class Service : IService
 
         return map.TryGetValue(postgresDataType.ToLower(), out string? value) ? value.ToUpper() : "nvarchar(max)".ToUpper();
     }
-    
+
     private static List<string> GetNecessarySchemas(List<string> schemas)
     {
         var defaultSchemas = new List<string>
@@ -339,7 +369,7 @@ internal class Service : IService
 
         return schemas.Where(x => !defaultSchemas.Contains(x)).ToList();
     }
-    
+
     public static string ConvertSqlTypeToPsqlType(string sqlType)
     {
         switch (sqlType.ToLower())

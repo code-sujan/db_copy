@@ -4,7 +4,7 @@ using Application.Helpers;
 using Dapper;
 using Spectre.Console;
 
-namespace Application;
+namespace Application.Services;
 
 public interface ISqlToSqlService
 {

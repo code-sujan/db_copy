@@ -9,7 +9,7 @@ using Microsoft.Extensions.Configuration;
 using Npgsql;
 using Spectre.Console;
 
-namespace Application;
+namespace Application.Services;
 
 internal class Service : IService
 {

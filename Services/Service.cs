@@ -50,7 +50,7 @@ internal class Service : IService
                 .SpinnerStyle(Style.Parse("green"))
                 .Start("Starting the migration...", ctx =>
                 {
-                    errors = _sqlToSqlService.CreateAndCopy(ctx, sourceConnection, destConnection);
+                    errors = _sqlToSqlService.Copy(ctx, sourceConnection, destConnection);
                 });
             SpectreConsoleHelper.WriteHeader("Success!", Color.Green);
         }

@@ -8,12 +8,12 @@ namespace Application.Services;
 
 public interface ISqlToSqlService
 {
-    List<string> CreateAndCopy(StatusContext ctx, SqlConnection sourceConnection, SqlConnection destinationConnection);
+    List<string> Copy(StatusContext ctx, SqlConnection sourceConnection, SqlConnection destinationConnection);
 }
 
 public class SqlToSqlService : ISqlToSqlService
 {
-    public List<string> CreateAndCopy(StatusContext ctx, SqlConnection sourceConnection, SqlConnection destinationConnection)
+    public List<string> Copy(StatusContext ctx, SqlConnection sourceConnection, SqlConnection destinationConnection)
     {
         var errors = new List<string>();
         sourceConnection.Open();
@@ -43,17 +43,7 @@ public class SqlToSqlService : ISqlToSqlService
             ctx.Status($"Looping through all tables of {sourceSchema} schema...");
             foreach (var table in tables)
             {
-                ctx.Status($"Fetching column definition for {table} table...");
-                var getColumnsQuery = $"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{table}' AND table_schema = '{sourceSchema}'";
-                var columns = sourceConnection.Query(getColumnsQuery);
-                SpectreConsoleHelper.Log($"Fetched column definition for {table} table...");
-
-                ctx.Status($"Creating table {destinationSchema}.{table} in sql server...");
-                var createTableQuery = $"CREATE TABLE {destinationSchema}.{table} (";
-                createTableQuery += string.Join(", ", columns.Select(column => $"[{column.column_name}] {column.data_type}"));
-                createTableQuery += ")";
-                destinationConnection.Execute(createTableQuery);
-                SpectreConsoleHelper.Log($"Created table {destinationSchema}.{table} in sql server...");
+                // CreateTable(ctx, sourceConnection, destinationConnection, table, sourceSchema, destinationSchema);
 
                 IDataReader data;
                 try
@@ -101,5 +91,20 @@ public class SqlToSqlService : ISqlToSqlService
         };
 
         return schemas.Where(x => !defaultSchemas.Contains(x)).ToList();
+    }
+
+    private static void CreateTable(StatusContext ctx, SqlConnection sourceConnection, SqlConnection destinationConnection, string table, string sourceSchema, string destinationSchema)
+    {
+        ctx.Status($"Fetching column definition for {table} table...");
+        var getColumnsQuery = $"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{table}' AND table_schema = '{sourceSchema}'";
+        var columns = sourceConnection.Query(getColumnsQuery);
+        SpectreConsoleHelper.Log($"Fetched column definition for {table} table...");
+
+        ctx.Status($"Creating table {destinationSchema}.{table} in sql server...");
+        var createTableQuery = $"CREATE TABLE {destinationSchema}.{table} (";
+        createTableQuery += string.Join(", ", columns.Select(column => $"[{column.column_name}] {column.data_type}"));
+        createTableQuery += ")";
+        destinationConnection.Execute(createTableQuery);
+        SpectreConsoleHelper.Log($"Created table {destinationSchema}.{table} in sql server...");
     }
 }

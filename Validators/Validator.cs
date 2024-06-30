@@ -36,6 +36,10 @@ internal class Validator : IValidator
         {
             return false;
         }
+        finally
+        {
+            connection.Close();
+        }
     }
 
     #endregion

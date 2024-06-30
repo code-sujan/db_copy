@@ -28,12 +28,9 @@ public class SqlToSqlService : ISqlToSqlService
         ctx.Status("Looping through available schemas...");
         foreach (var sourceSchema in schemas)
         {
-            string destinationSchema = $"{sourceSchema}_new";
+            string destinationSchema = $"{sourceSchema}";
 
-            ctx.Status($"Creating {destinationSchema} schema in sql server...");
-            var createDestinationSchemaQuery = $"CREATE SCHEMA [{destinationSchema}];";
-            destinationConnection.Execute(createDestinationSchemaQuery);
-            SpectreConsoleHelper.Log($"Created {destinationSchema} schema in sql server...");
+            // CreateSchema(ctx, destinationConnection, destinationSchema);
 
             ctx.Status($"Fetching available tables from {sourceSchema} schema...");
             var getTablesQuery = $"SELECT table_name FROM information_schema.tables WHERE table_schema = '{sourceSchema}'";
@@ -72,6 +69,14 @@ public class SqlToSqlService : ISqlToSqlService
         return errors;
     }
 
+    private static void CreateSchema(StatusContext ctx, SqlConnection destinationConnection, string destinationSchema)
+    {
+        ctx.Status($"Creating {destinationSchema} schema in sql server...");
+        var createDestinationSchemaQuery = $"CREATE SCHEMA [{destinationSchema}];";
+        destinationConnection.Execute(createDestinationSchemaQuery);
+        SpectreConsoleHelper.Log($"Created {destinationSchema} schema in sql server...");
+    }
+
     private static List<string> GetNecessarySchemas(List<string> schemas)
     {
         var defaultSchemas = new List<string>
@@ -87,7 +92,8 @@ public class SqlToSqlService : ISqlToSqlService
             "db_datareader",
             "db_datawriter",
             "db_denydatareader",
-            "db_denydatawriter"
+            "db_denydatawriter",
+            "HangFire"
         };
 
         return schemas.Where(x => !defaultSchemas.Contains(x)).ToList();

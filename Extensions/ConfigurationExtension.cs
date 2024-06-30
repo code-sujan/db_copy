@@ -13,6 +13,23 @@ public static class ConfigurationExtension
     {
         return new DbInfo(configuration["Destination:Type"], configuration["Destination:ConnectionString"]);
     }
+
+    public static CopyOptions GetCopyOptions(this IConfiguration configuration)
+    {
+        
+    }
+}
+
+public class CopyOptions
+{
+    public bool CopySelected { get; set; }
+    public List<CopyInfo> Infos { get; set; }
+}
+
+public class CopyInfo
+{
+    public string Schema { get; set; }
+    public List<string> Tables { get; set; }
 }
 
 public record DbInfo(string Type, string ConnectionString);

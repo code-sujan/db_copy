@@ -1,7 +1,9 @@
 ﻿using System.Data;
 using System.Data.SqlClient;
+using Application.Extensions;
 using Application.Helpers;
 using Dapper;
+using Microsoft.Extensions.Configuration;
 using Spectre.Console;
 
 namespace Application.Services;
@@ -13,6 +15,13 @@ public interface ISqlToSqlService
 
 public class SqlToSqlService : ISqlToSqlService
 {
+    private readonly IConfiguration _configuration;
+
+    public SqlToSqlService(IConfiguration configuration)
+    {
+        _configuration = configuration;
+    }
+
     public List<string> Copy(StatusContext ctx, SqlConnection sourceConnection, SqlConnection destinationConnection)
     {
         var errors = new List<string>();
@@ -26,6 +35,7 @@ public class SqlToSqlService : ISqlToSqlService
         var schemas = GetNecessarySchemas(allSchemas);
 
         ctx.Status("Looping through available schemas...");
+        var copyOptions = _configuration.GetCopyOptions();
         foreach (var sourceSchema in schemas)
         {
             string destinationSchema = $"{sourceSchema}";

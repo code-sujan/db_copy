@@ -16,7 +16,9 @@ public static class ConfigurationExtension
 
     public static CopyOptions GetCopyOptions(this IConfiguration configuration)
     {
-        
+        var opt = configuration.GetSection("Options").Get<CopyOptions>() ?? new CopyOptions();
+        if (!opt.CopySelected) return new CopyOptions();
+        return opt;
     }
 }
 

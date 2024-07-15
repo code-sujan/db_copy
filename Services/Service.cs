@@ -1,5 +1,7 @@
-﻿using System.Data;
+﻿using System.ComponentModel;
+using System.Data;
 using System.Data.SqlClient;
+using System.Text;
 using Application.Extensions;
 using Application.Helpers;
 using Application.Services.Interfaces;
@@ -7,6 +9,7 @@ using Application.Validators.Interfaces;
 using Dapper;
 using Microsoft.Extensions.Configuration;
 using Npgsql;
+using NpgsqlTypes;
 using Spectre.Console;
 
 namespace Application.Services;
@@ -33,6 +36,14 @@ internal class Service : IService
         {
             MigrateSqlToSql(source.ConnectionString, destination.ConnectionString);
         }
+        else if (source.Type.ToLower().Equals("mssql") && destination.Type.ToLower().Equals("psql"))
+        {
+            SqlToPsql(source.ConnectionString, destination.ConnectionString);
+        }
+        else if (source.Type.ToLower().Equals("psql") && destination.Type.ToLower().Equals("mssql"))
+        {
+            PsqlToSql(source.ConnectionString, destination.ConnectionString);
+        }
     }
 
     private void MigrateSqlToSql(string source, string dest)
@@ -40,7 +51,7 @@ internal class Service : IService
         var errors = new List<string>();
         try
         {
-            SpectreConsoleHelper.WriteHeader("postgresql to mssql", Color.Blue);
+            SpectreConsoleHelper.WriteHeader("MSSQL To MSSQL", Color.Blue);
             using var sourceConnection = new SqlConnection(source);
             using var destConnection = new SqlConnection(dest);
             _validator.ValidateProviders(sourceConnection, destConnection);
@@ -174,17 +185,17 @@ internal class Service : IService
                 .SpinnerStyle(Style.Parse("green"))
                 .Start("Starting the migration...", ctx =>
                 {
-                    using var postgresConnection = new NpgsqlConnection(source);
-                    using var sqlServerConnection = new SqlConnection(dest);
-                    _validator.ValidateProviders(postgresConnection, sqlServerConnection);
+                    using var sourceConnection = new SqlConnection(source);
+                    using var destConnection = new NpgsqlConnection(dest);
+                    _validator.ValidateProviders(sourceConnection, destConnection);
 
-                    postgresConnection.Open();
-                    sqlServerConnection.Open();
+                    sourceConnection.Open();
+                    destConnection.Open();
 
                     ctx.Status("Fetching MSSQL schemas");
                     ctx.Spinner(Spinner.Known.BouncingBall);
                     var getSchemasQuery = "SELECT schema_name FROM information_schema.schemata";
-                    var allSchemas = postgresConnection.Query<string>(getSchemasQuery).ToList();
+                    var allSchemas = sourceConnection.Query<string>(getSchemasQuery).ToList();
                     SpectreConsoleHelper.Log("Fetched schemas from postgresql...");
 
                     var schemas = GetNecessarySchemas(allSchemas);
@@ -195,13 +206,13 @@ internal class Service : IService
                         string destinationSchema = $"{sourceSchema}_new";
 
                         ctx.Status($"Creating {destinationSchema} schema in sql server...");
-                        var createDestinationSchemaQuery = $"CREATE SCHEMA [{destinationSchema}];";
-                        sqlServerConnection.Execute(createDestinationSchemaQuery);
+                        var createDestinationSchemaQuery = $"CREATE SCHEMA {destinationSchema};";
+                        destConnection.Execute(createDestinationSchemaQuery);
                         SpectreConsoleHelper.Log($"Created {destinationSchema} schema in sql server...");
 
                         ctx.Status($"Fetching available tables from {sourceSchema} schema...");
                         var getTablesQuery = $"SELECT table_name FROM information_schema.tables WHERE table_schema = '{sourceSchema}'";
-                        var tables = postgresConnection.Query<string>(getTablesQuery).ToList();
+                        var tables = sourceConnection.Query<string>(getTablesQuery).ToList();
                         SpectreConsoleHelper.Log($"Fetched tables of {sourceSchema} schema from postgres");
 
                         ctx.Status($"Looping through all tables of {sourceSchema} schema...");
@@ -209,33 +220,30 @@ internal class Service : IService
                         {
                             ctx.Status($"Fetching column definition for {table} table...");
                             var getColumnsQuery = $"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{table}' AND table_schema = '{sourceSchema}'";
-                            var columns = postgresConnection.Query(getColumnsQuery);
+                            var columns = sourceConnection.Query(getColumnsQuery);
                             SpectreConsoleHelper.Log($"Fetched column definition for {table} table...");
 
                             ctx.Status($"Creating table {destinationSchema}.{table} in sql server...");
                             var createTableQuery = $"CREATE TABLE {destinationSchema}.{table} (";
-                            createTableQuery += string.Join(", ", columns.Select(column => $"[{column.column_name}] {ConvertPostgreSqlToSqlServerDataType(column.data_type)}"));
+                            createTableQuery += string.Join(", ", columns.Select(column => $"{CleanColumn(column.column_name)} {ConvertSqlTypeToPsqlType(column.data_type)}"));
                             createTableQuery += ")";
-                            sqlServerConnection.Execute(createTableQuery);
+                            destConnection.Execute(createTableQuery);
                             SpectreConsoleHelper.Log($"Created table {destinationSchema}.{table} in sql server...");
 
                             IDataReader data;
                             try
                             {
                                 ctx.Status($"Fetching data from {sourceSchema}.{table} from postgresql...");
-                                data = postgresConnection.ExecuteReader($"SELECT * FROM {sourceSchema}.{table}");
+                                data = sourceConnection.ExecuteReader($"SELECT * FROM {sourceSchema}.{table}");
                                 SpectreConsoleHelper.Log($"Fetched data from {sourceSchema}.{table} table of postgresql...");
 
                                 ctx.Status("Coverting the data into proper shape before migrating to sql server...");
                                 var dataTable = new DataTable();
                                 dataTable.Load(data);
-                                SpectreConsoleHelper.Log("Converted data into proper shape...");
+                                SpectreConsoleHelper.Log($"Converted data into proper shape... Data Count: {dataTable.Rows.Count}");
 
                                 ctx.Status($"Transferring data from [blue]{sourceSchema}.{table}[/] to [green]{destinationSchema}.{table}[/]");
-                                using var bulkCopy = new SqlBulkCopy(sqlServerConnection);
-                                bulkCopy.DestinationTableName = $"{destinationSchema}.{table}";
-                                bulkCopy.BulkCopyTimeout = 300;
-                                bulkCopy.WriteToServer(dataTable);
+                                PsqlBulkInsert(destConnection, dataTable, $"{destinationSchema}.{table}", createTableQuery);
                                 SpectreConsoleHelper.Success($"Successfully transferred data from {sourceSchema}.{table} to {destinationSchema}.{table}");
                             }
                             catch (Exception ex)
@@ -256,6 +264,13 @@ internal class Service : IService
         {
             DoOnFinally(errors);
         }
+    }
+
+    private string CleanColumn(string columnName)
+    {
+        var col =  columnName.Replace("%", "").Replace(' ', '_');
+        if (col.Contains(' ')) return CleanColumn(col);
+        return col;
     }
 
     private static void DoOnFinally(List<string> errors)
@@ -392,15 +407,13 @@ internal class Service : IService
                 return "timestamp";
             case "decimal":
             case "numeric":
-                return "numeric";
-            case "float":
-            case "real":
-                return "float8";
-            case "int":
-                return "integer";
             case "money":
             case "smallmoney":
-                return "money";
+            case "float":
+            case "real":
+                return "numeric";
+            case "int":
+                return "integer";
             case "nvarchar":
             case "varchar":
             case "text":
@@ -419,5 +432,119 @@ internal class Service : IService
         }
     }
 
+    public void PsqlBulkInsert(NpgsqlConnection connection, DataTable dataTable, string tableName, string tableQuery)
+    {
+        var cmdTxt = $"COPY {tableName} ({string.Join(",", dataTable.Columns.Cast<DataColumn>().Select(c => CleanColumn(c.ColumnName)))}) FROM STDIN (FORMAT BINARY)";
+        var types = new List<string>();
+        var count = 0;
+        using (var importer = connection.BeginBinaryImport(cmdTxt))
+        {
+            // Add each row to the binary importer
+            foreach (DataRow row in dataTable.Rows)
+            {
+                importer.StartRow();
+                for (int i = 0; i < dataTable.Columns.Count; i++)
+                {
+                    var value = row[i];
+                    var type = dataTable.Columns[i].DataType;
+                    if (count == 0)
+                    {
+                        types.Add(type.FullName);
+                    }
+                    NpgsqlDbType dataType = GetNpgsqlDbType(type);
+                    if (value == null || value == DBNull.Value)
+                    {
+                        importer.WriteNull();
+                    }
+                    else
+                    {
+                        // var byteVal = ConvertToBytes(value, type);
+                        importer.Write(value, dataType);
+                    }
+                }
+
+                count++;
+            }
+
+           
+            try
+            {
+                importer.Complete();
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"{tableQuery}");
+                Console.WriteLine($"{string.Join(",",types)}");
+                connection.Open();
+            }
+        }
+    }
+    
+    static NpgsqlDbType GetNpgsqlDbType(Type type)
+    {
+        
+        
+        if (type == typeof(byte[]))
+        {
+            return NpgsqlDbType.Bytea;
+        }
+        else if (type == typeof(bool))
+        {
+            return NpgsqlDbType.Boolean;
+        }
+        else if (type == typeof(char))
+        {
+            return NpgsqlDbType.Char;
+        }
+        else if (type == typeof(DateTime))
+        {
+            return NpgsqlDbType.Timestamp;
+        }
+        else if (type == typeof(decimal))
+        {
+            return NpgsqlDbType.Numeric;
+        }
+        else if (type == typeof(double))
+        {
+            return NpgsqlDbType.Numeric;
+        }
+        else if (type == typeof(float))
+        {
+            return NpgsqlDbType.Numeric;
+        }
+        else if (type == typeof(Guid))
+        {
+            return NpgsqlDbType.Uuid;
+        }
+        else if (type == typeof(int))
+        {
+            return NpgsqlDbType.Integer;
+        }
+        else if (type == typeof(long))
+        {
+            return NpgsqlDbType.Bigint;
+        }
+        else if (type == typeof(short))
+        {
+            return NpgsqlDbType.Smallint;
+        }
+        else if (type == typeof(TimeSpan))
+        {
+            return NpgsqlDbType.Time;
+        }
+        else if (type == typeof(DateTimeOffset))
+        {
+            return NpgsqlDbType.TimestampTz;
+        }
+        else if (type == typeof(string))
+        {
+            return NpgsqlDbType.Text;
+        }
+        else
+        {
+            throw new Exception($"Invalid type {type.FullName}");
+        }
+    }
+    
     #endregion
 }

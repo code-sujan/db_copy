@@ -1,10 +1,19 @@
 ﻿{
   "Source": { 
     "Type": "MSSQL",
-    "ConnectionString": "Server=CODE-SUJAN\\MSSQLSERVER;Database=Aichhik_Saving_KTM;User Id=sa;Password=admin;"
+    "ConnectionString": "Server=code-sujan\\MSSQLSERVER,1433;Database=SAGUN79;User Id=sa;Password=admin;"
   },
   "Destination": {
-    "Type": "MSSQL",
-    "ConnectionString": "Server=CODE-SUJAN\\MSSQLSERVER;Database=Aichhik2;User Id=sa;Password=admin;"
+    "Type": "PSSQL",
+    "ConnectionString": "Server=localhost; port=5432; Username=postgres; Password=admin; Database=sagundb;"
+  },
+  "Options": {
+    "CopySelected": false,
+    "Infos": [{
+      "Schema": "dbo",
+      "Tables": [
+        ""
+      ]
+    }]
   }
 }
